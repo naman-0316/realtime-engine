@@ -1,17 +1,18 @@
 # realtime-engine
 
-An authoritative, real-time multiplayer state synchronization engine in Go.
-The server owns all game state; clients send only intents (`ACTION_MOVE`,
-`ACTION_BUZZ`, ...) and the server validates, applies, and broadcasts
-authoritative diffs. Matchmaking, disconnect/reconnect with a grace window,
-rate limiting, and multi-node coordination via Redis are all generic —
-tic-tac-toe (and a second toy game, a reflex buzzer) are just plugins
-behind a `Game` interface, not special-cased into the engine.
+An authoritative, real-time multiplayer state synchronization engine written in Go.
 
-This project is backend-only by design: there is no browser client. See
-[`cmd/loadtest-client`](#cmdloadtest-client) for a scripted CLI client, and
-[`test/integration`](test/integration) for automated end-to-end coverage
-over real WebSocket connections.
+The server owns all game state. Clients only ever send intents (`ACTION_MOVE`,
+`ACTION_BUZZ`, and so on), and the server validates them, applies them, and
+broadcasts the resulting diffs back out. Matchmaking, disconnect/reconnect
+with a grace window, rate limiting, and multi-node coordination via Redis
+are all generic. Tic-tac-toe (plus a second toy game, a reflex buzzer) is
+just a plugin behind a `Game` interface, not something baked into the engine.
+
+This project is backend-only on purpose, there's no browser client. Check out
+[`cmd/loadtest-client`](#running-it) for a scripted CLI client, and
+[`test/integration`](test/integration) for automated end-to-end tests that
+run over real WebSocket connections.
 
 ## Architecture
 
@@ -61,25 +62,27 @@ flowchart TB
     RM -.-> Redis
 ```
 
-**Concurrency model:** each `Room` runs one goroutine reading a serialized
-command channel — the "actor" pattern. Every join, action, disconnect, and
-tick for that room is processed one at a time on that goroutine, so
-`Game` implementations never need to be thread-safe themselves. The
-`room.Manager` registry (which rooms exist) is a separate, ordinary
-`sync.RWMutex`-guarded map — a deliberate hybrid: short, read-heavy
-registry operations use a plain mutex; anything touching actual game state
-goes through the actor. See the package doc in
+**Concurrency model.** Each `Room` runs on its own goroutine, reading commands
+one at a time off a channel (the "actor" pattern). Every join, action,
+disconnect, and tick for that room gets processed in order on that one
+goroutine, so `Game` implementations never have to worry about thread
+safety themselves. The `room.Manager` registry (basically, which rooms
+exist right now) is handled separately with a plain `sync.RWMutex`-guarded
+map. That's a deliberate split: short, read-heavy registry lookups use a
+plain mutex, while anything that touches actual game state goes through
+the actor. More detail lives in the package doc in
 [`internal/service/room/room.go`](internal/service/room/room.go).
 
-**Horizontal scaling:** with `REDIS_ADDR` set, each room acquires a
-lease (`room:{id}:owner`, renewed at `LeaseTTL/3`, self-healing — a missed
-renewal triggers a re-acquire rather than permanently losing the room) so
-exactly one node runs a given room's actor. Player sessions are recorded in
-Redis (`session:{id}`, TTL = grace window) so a reconnect landing on a
-*different* node gets a `REDIRECT` to the node that actually owns the room,
-rather than the engine attempting to tunnel WebSocket traffic between
-nodes — a deliberate scope tradeoff, see
-[`internal/storage/redis`](internal/storage/redis).
+**Horizontal scaling.** With `REDIS_ADDR` set, each room grabs a lease
+(`room:{id}:owner`, renewed every `LeaseTTL/3`) so exactly one node runs
+that room's actor at a time. The renewal is self-healing too: if a renewal
+gets missed, the node just re-acquires the lease instead of losing the room
+for good. Player sessions get recorded in Redis as well
+(`session:{id}`, with a TTL matching the grace window), so if a reconnect
+lands on a *different* node, that node can send back a `REDIRECT` pointing
+to whichever node actually owns the room. The engine doesn't try to tunnel
+WebSocket traffic between nodes itself, that's a deliberate scope tradeoff.
+See [`internal/storage/redis`](internal/storage/redis) for the details.
 
 ## Directory layout
 
@@ -93,7 +96,7 @@ internal/
                          exact same stack)
   config/                env-based configuration with defaults
   domain/
-    game/                the generic Game interface + Registry — engine-agnostic
+    game/                the generic Game interface + Registry, engine-agnostic
     tictactoe/            turn-based reference implementation
     pingpong/              tick-driven reflex-buzzer implementation (proves the
                          abstraction isn't secretly tictactoe-shaped)
@@ -126,7 +129,7 @@ REDIS_ADDR=localhost:6379 go run ./cmd/server   # multi-node-capable
 docker compose -f deploy/docker/docker-compose.yml up -d
 ```
 
-Play a game from the CLI (two terminals):
+Want to actually watch a game play out? Open two terminals:
 
 ```sh
 go run ./cmd/loadtest-client -addr http://localhost:8080 -player alice
@@ -135,37 +138,41 @@ go run ./cmd/loadtest-client -addr http://localhost:8080 -player bob
 
 ### Configuration
 
-All via environment variables (see `internal/config/config.go` for
-defaults): `HTTP_ADDR`, `NODE_ID`, `JWT_SECRET`, `SESSION_TTL`,
-`GRACE_DURATION`, `TICK_INTERVAL`, `FINISHED_LINGER`, `WAITING_TTL`,
-`GC_INTERVAL`, `PING_INTERVAL`, `PONG_TIMEOUT`, `RATE_LIMIT_CAPACITY`,
-`RATE_LIMIT_REFILL`, `REDIS_ADDR`, `LEASE_TTL`.
+Everything is set through environment variables (see
+`internal/config/config.go` for the defaults): `HTTP_ADDR`, `NODE_ID`,
+`JWT_SECRET`, `SESSION_TTL`, `GRACE_DURATION`, `TICK_INTERVAL`,
+`FINISHED_LINGER`, `WAITING_TTL`, `GC_INTERVAL`, `PING_INTERVAL`,
+`PONG_TIMEOUT`, `RATE_LIMIT_CAPACITY`, `RATE_LIMIT_REFILL`, `REDIS_ADDR`,
+and `LEASE_TTL`.
 
 ## Testing
 
 ```sh
 go test ./...                    # unit + integration (real WebSocket connections)
-go test -race -count=5 ./...     # with the race detector (needs cgo; see below)
+go test -race -count=5 ./...     # with the race detector (needs cgo, see below)
 ```
 
-The race detector needs a real C toolchain. If your host doesn't have one
-(e.g. Windows without mingw-w64), run it in Docker instead:
+The race detector needs a real C toolchain. If your machine doesn't have one
+set up (Windows without mingw-w64, for example), just run it in Docker
+instead:
 
 ```sh
 docker run --rm -v "$(pwd):/src" -w /src golang:1.24 go test -race -count=5 ./...
 ```
 
-- `internal/domain/*`: table-driven game-rule tests (all win lines, draws,
-  illegal moves) plus a generic conformance suite
-  (`internal/domain/game/conformance_test.go`) run against every registered
-  `Game`, so the interface is proven against two structurally different
-  games, not just tic-tac-toe.
-- `internal/service/room`: concurrency tests under `-race` — concurrent
-  `Join` respecting room capacity, concurrent `Disconnect`/`Reconnect`
-  racing the grace-window timer, GC sweep with an injectable `Clock` (no
-  real sleeps).
-- `test/integration`: a full 2-player game, invalid-action rejection,
-  heartbeat-timeout-triggers-forfeit, and reconnect-within-grace-window —
+A quick tour of what's covered:
+
+- `internal/domain/*`: table-driven game-rule tests (every win line, draws,
+  illegal moves), plus a generic conformance suite
+  (`internal/domain/game/conformance_test.go`) that runs against every
+  registered `Game`. That way the interface gets proven out against two
+  structurally different games, not just tic-tac-toe.
+- `internal/service/room`: concurrency tests under `-race`, including
+  concurrent `Join` calls respecting room capacity, concurrent
+  `Disconnect`/`Reconnect` racing the grace-window timer, and a GC sweep
+  test with an injectable `Clock` so it doesn't need real sleeps.
+- `test/integration`: a full two-player game, invalid-action rejection,
+  heartbeat-timeout-triggers-forfeit, and reconnect-within-grace-window,
   all driven over real `gorilla/websocket` client connections against an
   `httptest.Server` running the actual production wiring.
 
@@ -173,29 +180,30 @@ docker run --rm -v "$(pwd):/src" -w /src golang:1.24 go test -race -count=5 ./..
 
 See [`test/loadtest/README.md`](test/loadtest/README.md) for how to run the
 k6 script, and [`test/loadtest/results/BENCHMARKS.md`](test/loadtest/results/BENCHMARKS.md)
-for real results. Headline number: **2,200 concurrent WebSocket connections
-(~1,100 concurrently active rooms) sustained with p95 action latency ~1ms
-and p99 ~0ms**, negligible server CPU/memory, measured by actually running
-the script against this repo's own `docker-compose.yml` stack.
+for real results from actually running it. The headline number:
+**2,200 concurrent WebSocket connections (about 1,100 concurrently active
+rooms) held steady with p95 action latency around 1ms and p99 around 0ms**,
+with barely any server CPU or memory used, measured by running the script
+against this repo's own `docker-compose.yml` stack.
 
 ## Protocol
 
 ### Auth
 
-`POST /session` → `{playerId, sessionId, token, expiresAt}`. Connect to
-`GET /ws` with `Authorization: Bearer <token>`. The token is stable for the
-whole logical session (no rotation); reconnecting within the grace window
-means simply reconnecting with the same token.
+`POST /session` returns `{playerId, sessionId, token, expiresAt}`. Connect
+to `GET /ws` with `Authorization: Bearer <token>`. The token stays valid
+for the whole logical session and never rotates, so reconnecting within the
+grace window just means reconnecting with that same token.
 
 ### Envelope
 
-Client → server:
+Client to server:
 
 ```jsonc
 { "type": "ACTION_MOVE", "seq": 42, "ts": 1755678900123, "payload": {"x":1,"y":2} }
 ```
 
-Server → client:
+Server to client:
 
 ```jsonc
 {
@@ -214,33 +222,36 @@ Server → client:
 }
 ```
 
-Two client-sent control types beyond game actions: `FIND_MATCH` (payload
-`{"gameType":"tictactoe"}`) and `RESYNC` (no payload — requests a fresh
-`STATE_SNAPSHOT`, e.g. after detecting a `serverSeq` gap).
+There are two client-sent control types besides game actions: `FIND_MATCH`
+(payload `{"gameType":"tictactoe"}`) and `RESYNC` (no payload needed, it
+just asks for a fresh `STATE_SNAPSHOT`, useful after noticing a gap in
+`serverSeq`).
 
-### Sequencing & idempotency
+### Sequencing and idempotency
 
-Each player's `seq` must strictly increase; a duplicate or stale `seq` is
-rejected with `STALE_OR_DUPLICATE_SEQ` rather than applied twice — safe
-against a client retrying a send it wasn't sure was received.
+Each player's `seq` has to strictly increase. A duplicate or stale `seq`
+gets rejected with `STALE_OR_DUPLICATE_SEQ` instead of being applied again,
+which makes it safe for a client to retry a send it wasn't sure got through.
 
-### Disconnect / reconnect
+### Disconnect and reconnect
 
-Disconnect (heartbeat timeout or transport close) starts a
-`GRACE_DURATION` (default 30s) timer for that player; a reconnect with the
-same bearer token before it expires resumes the room and sends a fresh
-`STATE_SNAPSHOT`. If it expires, `Game.OnPlayerAbandoned` decides the
-outcome (tic-tac-toe declares the remaining player the winner).
+A disconnect (heartbeat timeout, or the connection just closing) starts a
+`GRACE_DURATION` timer for that player, 30 seconds by default. Reconnecting
+with the same bearer token before that timer runs out resumes the room and
+sends back a fresh `STATE_SNAPSHOT`. If the timer does run out,
+`Game.OnPlayerAbandoned` decides what happens next (tic-tac-toe just
+declares the remaining player the winner).
 
-### Rate limiting & validation
+### Rate limiting and validation
 
-Token bucket per connection (default capacity 20, refill 10/s) — chosen
-over a sliding-window log because it allows short legitimate bursts (real
-player input is bursty) at O(1) memory/check. Structural validation
-(message size, required `type` field, payload size) happens at the
-transport boundary before a `game.Action` is ever constructed; game-rules
-validation (`ErrNotYourTurn`, `ErrIllegalMove`, ...) happens inside the
-room actor via `Game.Validate`.
+Each connection gets its own token bucket (capacity 20, refilling at 10/s
+by default). That was chosen over a sliding-window log because it allows
+short, legitimate bursts, real player input tends to be bursty, while
+still only costing O(1) memory and O(1) work per check. Structural
+validation (message size, a required `type` field, payload size) happens
+at the transport boundary before a `game.Action` even gets constructed.
+Game-rules validation (`ErrNotYourTurn`, `ErrIllegalMove`, and so on)
+happens later, inside the room actor, via `Game.Validate`.
 
 ## Adding a new game
 
@@ -250,6 +261,6 @@ Implement `game.Game` (see `internal/domain/game/game.go`) and register it:
 registry.Register("my-game", mygame.New)
 ```
 
-Nothing in `service/` or `transport/` needs to change — see
-`internal/domain/pingpong` for a second, structurally different example
-(tick-driven rather than purely turn-based).
+Nothing in `service/` or `transport/` needs to change. Take a look at
+`internal/domain/pingpong` for a second example that's structurally
+different from tic-tac-toe (tick-driven instead of purely turn-based).
