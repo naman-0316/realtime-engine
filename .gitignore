@@ -1,0 +1,7 @@
+/bin
+/dist
+*.exe
+*.test
+*.out
+.env
+/test/loadtest/results/*.json

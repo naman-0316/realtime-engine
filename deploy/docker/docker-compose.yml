@@ -1,0 +1,61 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      NODE_ID: "ws://server:8080/ws"
+      REDIS_ADDR: "redis:6379"
+      JWT_SECRET: "dev-secret-change-me"
+      GRACE_DURATION: "30s"
+      TICK_INTERVAL: "100ms"
+      FINISHED_LINGER: "10s"
+      WAITING_TTL: "60s"
+      GC_INTERVAL: "5s"
+      PING_INTERVAL: "15s"
+      PONG_TIMEOUT: "10s"
+      RATE_LIMIT_CAPACITY: "20"
+      RATE_LIMIT_REFILL: "10"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # A second node against the same Redis, demonstrating multi-node
+  # room-ownership leases and cross-node reconnect REDIRECTs (see
+  # internal/storage/redis and internal/service/room's Locator wiring).
+  # Not started by default (`docker compose up`); include it explicitly
+  # with `docker compose --profile multi-node up`.
+  server-2:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    ports:
+      - "8081:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      NODE_ID: "ws://server-2:8080/ws"
+      REDIS_ADDR: "redis:6379"
+      JWT_SECRET: "dev-secret-change-me"
+      GRACE_DURATION: "30s"
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles: ["multi-node"]
