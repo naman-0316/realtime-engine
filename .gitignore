@@ -1,2 +1,7 @@
-/node_modules
-/package-lock.json
+/bin
+/dist
+*.exe
+*.test
+*.out
+.env
+/test/loadtest/results/*.json

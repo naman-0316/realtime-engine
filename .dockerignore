@@ -1,0 +1,8 @@
+bin/
+dist/
+*.exe
+*.test
+test/
+.git/
+.gitignore
+*.md
