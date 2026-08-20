@@ -95,6 +95,11 @@ export const options = {
       gracefulStop: "15s",
     },
   },
+  // k6's default summaryTrendStats is ["avg", "min", "med", "max", "p(90)",
+  // "p(95)"]. p(99) is NOT included unless listed explicitly here. Without
+  // this, v["p(99)"] in textSummary() below is undefined, silently falls
+  // back to 0, and gets misreported as a real p99 measurement.
+  summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)"],
   thresholds: {
     // These gate CI-style pass/fail; tune once you have a baseline for your
     // hardware (see test/loadtest/results/BENCHMARKS.md for recorded runs).

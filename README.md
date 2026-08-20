@@ -182,8 +182,8 @@ See [`test/loadtest/README.md`](test/loadtest/README.md) for how to run the
 k6 script, and [`test/loadtest/results/BENCHMARKS.md`](test/loadtest/results/BENCHMARKS.md)
 for real results from actually running it. The headline number:
 **2,200 concurrent WebSocket connections (about 1,100 concurrently active
-rooms) held steady with p95 action latency around 1ms and p99 around 0ms**,
-with barely any server CPU or memory used, measured by running the script
+rooms) held steady with p95 action latency around 1ms and p99 around 3ms**,
+with under 340 MiB of server memory used, measured by running the script
 against this repo's own `docker-compose.yml` stack.
 
 ## Protocol
